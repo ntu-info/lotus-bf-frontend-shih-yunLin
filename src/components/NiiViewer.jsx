@@ -1,8 +1,8 @@
 
-// 顯示設定：讓 x>0 出現在畫面右側（右腦在右）
+// Display settings: Make x>0 appear on the right side (right brain on the right)
 const X_RIGHT_ON_SCREEN_RIGHT = true;
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import * as nifti from 'nifti-reader-js'
 import { API_BASE } from '../api'
 
@@ -19,6 +19,83 @@ function isStandardMNI2mm(dims, voxelMM) {
 const MNI2MM = { x0: 90, y0: -126, z0: -72, vx: 2, vy: 2, vz: 2 };
 
 export function NiiViewer({ query }) {
+  const [dims, setDims] = useState([0,0,0]) // canvas dims (prefer BG; overlay only if same dims)
+  const [canvasVersion, setCanvasVersion] = useState(0)
+
+  const [ix, setIx] = useState(0) // sagittal (X)
+  const [iy, setIy] = useState(0) // coronal  (Y)
+  const [iz, setIz] = useState(0) // axial    (Z)
+
+  const [cx, setCx] = useState('0')
+  const [cy, setCy] = useState('0')
+  const [cz, setCz] = useState('0')
+
+  const canvases = [useRef(null), useRef(null), useRef(null)]
+
+  const suppressSyncRef = useRef(false)
+  const pendingSlicesRef = useRef(null)
+
+  const setSlicesFromCoords = useCallback(({ x, y, z }) => {
+    const [nx, ny, nz] = dims
+    if (!nx || !ny || !nz) return false
+    suppressSyncRef.current = true
+    setIx(coord2idx(x, nx, 'x'))
+    setIy(coord2idx(y, ny, 'y'))
+    setIz(coord2idx(z, nz, 'z'))
+    return true
+  }, [dims])
+
+  // Listen for peak click events from Studies / Bookmarks
+  useEffect(() => {
+    const handler = (e) => {
+      const { x, y, z } = e.detail || {}
+      if (typeof x === 'number' && typeof y === 'number' && typeof z === 'number') {
+        setCx(String(x))
+        setCy(String(y))
+        setCz(String(z))
+        const applied = setSlicesFromCoords({ x, y, z })
+        if (!applied) pendingSlicesRef.current = { x, y, z }
+        else pendingSlicesRef.current = null
+      }
+    }
+    window.addEventListener('nii-viewer-set-coords', handler)
+    return () => window.removeEventListener('nii-viewer-set-coords', handler)
+  }, [setSlicesFromCoords])
+
+  useEffect(() => {
+    if (pendingSlicesRef.current) {
+      const applied = setSlicesFromCoords(pendingSlicesRef.current)
+      if (applied) pendingSlicesRef.current = null
+    }
+  }, [dims, setSlicesFromCoords])
+
+  // Fetch an initial peak for the active query and sync the viewer
+  useEffect(() => {
+    if (!query) return
+    let alive = true
+    ;(async () => {
+      try {
+        const u = new URL(`${API_BASE}/query/${encodeURIComponent(query)}/locations`)
+        u.searchParams.set('limit', '1')
+        const res = await fetch(u.toString())
+        const data = await res.json().catch(() => ({}))
+        if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`)
+        if (!alive) return
+        const first = Array.isArray(data?.results) && data.results.length > 0 ? data.results[0] : null
+        if (first) {
+          setCx(String(first.x))
+          setCy(String(first.y))
+          setCz(String(first.z))
+          const applied = setSlicesFromCoords(first)
+          if (!applied) pendingSlicesRef.current = first
+          else pendingSlicesRef.current = null
+        }
+      } catch {
+        // ignore auto-fill errors
+      }
+    })()
+    return () => { alive = false }
+  }, [query, setSlicesFromCoords])
   const [loadingBG, setLoadingBG] = useState(false)
   const [loadingMap, setLoadingMap] = useState(false)
   const [errBG, setErrBG] = useState('')
@@ -45,20 +122,6 @@ export function NiiViewer({ query }) {
     const vm = bgRef.current?.voxelMM ?? mapRef.current?.voxelMM ?? [1,1,1]
     return { x: vm[0], y: vm[1], z: vm[2] }
   }
-  const [dims, setDims] = useState([0,0,0]) // canvas dims (prefer BG; overlay only if same dims)
-
-  // slice indices (voxel coordinates in [0..N-1])
-  const [ix, setIx] = useState(0) // sagittal (X)
-  const [iy, setIy] = useState(0) // coronal  (Y)
-  const [iz, setIz] = useState(0) // axial    (Z)
-
-  // Neurosynth-style displayed coords: signed, centered at middle voxel
-  const [cx, setCx] = useState('0')
-  const [cy, setCy] = useState('0')
-  const [cz, setCz] = useState('0')
-
-  const canvases = [useRef(null), useRef(null), useRef(null)]
-
   const mapUrl = useMemo(() => {
     if (!query) return ''
     const u = new URL(`${API_BASE}/query/${encodeURIComponent(query)}/nii`)
@@ -132,7 +195,7 @@ export function NiiViewer({ query }) {
     return { data: f32, dims:[nx,ny,nz], voxelMM:[vx,vy,vz], min: mn, max: mx }
   }
 
-  const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v))
+  // clamp helper removed (unused) to satisfy linter
 
   // helpers: convert between index [0..N-1] and neurosynth-style signed coord centered at mid voxel
   // Display conventions to match Neurosynth-like UI:
@@ -190,8 +253,8 @@ const coord2idx = (c_mm, n, axis) => {
         setErrBG(e?.message || String(e))
         bgRef.current = null
       } finally {
-        if (!alive) return
-        setLoadingBG(false)
+        // avoid returning from finally (unsafe); only set state when still alive
+        if (alive) setLoadingBG(false)
       }
     })()
     return () => { alive = false }
@@ -229,8 +292,8 @@ const coord2idx = (c_mm, n, axis) => {
         setErrMap(e?.message || String(e))
         mapRef.current = null
       } finally {
-        if (!alive) return
-        setLoadingMap(false)
+        // avoid returning from finally (unsafe); only set state when still alive
+        if (alive) setLoadingMap(false)
       }
     })()
     return () => { alive = false }
@@ -243,42 +306,57 @@ const coord2idx = (c_mm, n, axis) => {
     return percentile(mv.data, Math.max(0, Math.min(100, Number(pctl) || 95)))
   }, [thrMode, thrValue, pctl, mapRef.current])
 
+  useEffect(() => {
+    const nodes = canvases.map(ref => ref.current).filter(Boolean)
+    if (!nodes.length) return
+    if (typeof ResizeObserver === 'undefined') {
+      const handler = () => setCanvasVersion(v => v + 1)
+      window.addEventListener('resize', handler)
+      return () => window.removeEventListener('resize', handler)
+    }
+    const ro = new ResizeObserver(() => setCanvasVersion(v => v + 1))
+    nodes.forEach(node => ro.observe(node))
+    return () => ro.disconnect()
+  }, [dims[0], dims[1], dims[2]])
+
   // draw one slice (upright orientation via vertical flip)
   function drawSlice (canvas, axis /* 'z' | 'y' | 'x' */, index) {
+    if (!canvas) return
     const [nx, ny, nz] = dims
-    
-    // 若要讓 x>0 出現在畫面右側，就在取樣時把 X 軸做水平翻轉
-    const sx = (x) => (X_RIGHT_ON_SCREEN_RIGHT ? (nx - 1 - x) : x);
-    const bg  = bgRef.current
-    const map = mapRef.current
+    if (!nx || !ny || !nz) return
 
+    const bg = bgRef.current
+    const map = mapRef.current
     const dimsStr = dims.join('x')
-    const bgOK  = !!(bg  && bg.dims.join('x')  === dimsStr)
+    const bgOK = !!(bg && bg.dims.join('x') === dimsStr)
     const mapOK = !!(map && map.dims.join('x') === dimsStr)
 
-    let w=0, h=0, getBG=null, getMap=null
-    if (axis === 'z') { w = nx; h = ny; if (bgOK)  getBG  = (x,y)=> bg.data[sx(x) + y*nx + index*nx*ny]; if (mapOK) getMap = (x,y)=> map.data[sx(x) + y*nx + index*nx*ny] }
-    if (axis === 'y') { w = nx; h = nz; if (bgOK)  getBG  = (x,y)=> bg.data[sx(x) + index*nx + y*nx*ny]; if (mapOK) getMap = (x,y)=> map.data[sx(x) + index*nx + y*nx*ny] }
-    if (axis === 'x') { w = ny; h = nz; if (bgOK)  getBG  = (x,y)=> bg.data[index + x*nx + y*nx*ny]; if (mapOK) getMap = (x,y)=> map.data[index + x*nx + y*nx*ny] }
+    const sx = (x) => (X_RIGHT_ON_SCREEN_RIGHT ? (nx - 1 - x) : x)
 
-    canvas.width = w; canvas.height = h
-    const ctx = canvas.getContext('2d', { willReadFrequently: false })
-    const img = ctx.createImageData(w, h)
-
-    const alpha = Math.max(0, Math.min(1, overlayAlpha))
-    const R = 255, G = 0, B = 0
-    const thr = mapThreshold
-
-    // background normalization based on its own min/max
+    let w = 0
+    let h = 0
+    let getBG = null
+    let getMap = null
+    if (axis === 'z') { w = nx; h = ny; if (bgOK) getBG = (x, y) => bg.data[sx(x) + y * nx + index * nx * ny]; if (mapOK) getMap = (x, y) => map.data[sx(x) + y * nx + index * nx * ny] }
+    if (axis === 'y') { w = nx; h = nz; if (bgOK) getBG = (x, y) => bg.data[sx(x) + index * nx + y * nx * ny]; if (mapOK) getMap = (x, y) => map.data[sx(x) + index * nx + y * nx * ny] }
+    if (axis === 'x') { w = ny; h = nz; if (bgOK) getBG = (x, y) => bg.data[index + x * nx + y * nx * ny]; if (mapOK) getMap = (x, y) => map.data[index + x * nx + y * nx * ny] }
+    if (!w || !h) return
+    const offscreen = document.createElement('canvas')
+    offscreen.width = w
+    offscreen.height = h
+    const offCtx = offscreen.getContext('2d', { willReadFrequently: false })
+    const img = offCtx.createImageData(w, h)
     const bgMin = bg?.min ?? 0
     const bgMax = bg?.max ?? 1
     const bgRange = (bgMax - bgMin) || 1
+    const alpha = Math.max(0, Math.min(1, overlayAlpha))
+    const R = 255; const G = 0; const B = 0
+    const thr = mapThreshold
 
     let p = 0
-    for (let yy=0; yy<h; yy++) {
-      const srcY = h - 1 - yy // flip vertically
-      for (let xx=0; xx<w; xx++) {
-        // draw background
+    for (let yy = 0; yy < h; yy++) {
+      const srcY = h - 1 - yy
+      for (let xx = 0; xx < w; xx++) {
         let gray = 0
         if (getBG) {
           const vbg = getBG(xx, srcY)
@@ -287,12 +365,11 @@ const coord2idx = (c_mm, n, axis) => {
           if (g > 1) g = 1
           gray = (g * 255) | 0
         }
-        img.data[p    ] = gray
+        img.data[p] = gray
         img.data[p + 1] = gray
         img.data[p + 2] = gray
         img.data[p + 3] = 255
 
-        // overlay map
         if (getMap) {
           let mv = getMap(xx, srcY)
           const raw = mv
@@ -300,7 +377,7 @@ const coord2idx = (c_mm, n, axis) => {
           let pass = (thr == null) ? (mv > 0) : (mv >= thr)
           if (posOnly && raw <= 0) pass = false
           if (pass) {
-            img.data[p    ] = ((1 - alpha) * img.data[p]     + alpha * R) | 0
+            img.data[p] = ((1 - alpha) * img.data[p] + alpha * R) | 0
             img.data[p + 1] = ((1 - alpha) * img.data[p + 1] + alpha * G) | 0
             img.data[p + 2] = ((1 - alpha) * img.data[p + 2] + alpha * B) | 0
           }
@@ -308,28 +385,53 @@ const coord2idx = (c_mm, n, axis) => {
         p += 4
       }
     }
-    ctx.putImageData(img, 0, 0)
+    offCtx.putImageData(img, 0, 0)
 
-    // draw green crosshairs
+    const rect = canvas.getBoundingClientRect()
+    const dpr = window.devicePixelRatio || 1
+    const baseSide = rect.width || rect.height || Math.max(w, h)
+    const targetSide = Math.max(1, Math.round(baseSide * dpr))
+    canvas.width = targetSide
+    canvas.height = targetSide
+    const ctx = canvas.getContext('2d', { willReadFrequently: false })
+    ctx.imageSmoothingEnabled = true
+    ctx.clearRect(0, 0, targetSide, targetSide)
+    const scale = Math.min(targetSide / w, targetSide / h)
+    const drawW = w * scale
+    const drawH = h * scale
+    const offsetX = (targetSide - drawW) / 2
+    const offsetY = (targetSide - drawH) / 2
+    ctx.drawImage(offscreen, 0, 0, w, h, offsetX, offsetY, drawW, drawH)
+
     ctx.save()
     ctx.strokeStyle = '#00ff00'
-    ctx.lineWidth = 1
-    let cx = 0, cy = 0
-    if (axis === 'z') { // plane: X by Y
-      cx = Math.max(0, Math.min(w-1, (X_RIGHT_ON_SCREEN_RIGHT ? (w - 1 - ix) : ix)))
-      cy = Math.max(0, Math.min(h-1, iy))
-    } else if (axis === 'y') { // plane: X by Z
-      cx = Math.max(0, Math.min(w-1, (X_RIGHT_ON_SCREEN_RIGHT ? (w - 1 - ix) : ix)))
-      cy = Math.max(0, Math.min(h-1, iz))
-    } else { // axis === 'x' (plane: Y by Z)
-      cx = Math.max(0, Math.min(w-1, iy))
-      cy = Math.max(0, Math.min(h-1, iz))
+    ctx.lineWidth = Math.max(1, Math.round(dpr))
+    let crossX = 0
+    let crossY = 0
+    if (axis === 'z') {
+      crossX = Math.max(0, Math.min(w - 1, (X_RIGHT_ON_SCREEN_RIGHT ? (w - 1 - ix) : ix)))
+      crossY = Math.max(0, Math.min(h - 1, iy))
+    } else if (axis === 'y') {
+      crossX = Math.max(0, Math.min(w - 1, (X_RIGHT_ON_SCREEN_RIGHT ? (w - 1 - ix) : ix)))
+      crossY = Math.max(0, Math.min(h - 1, iz))
+    } else {
+      crossX = Math.max(0, Math.min(w - 1, iy))
+      crossY = Math.max(0, Math.min(h - 1, iz))
     }
-    const screenY = h - 1 - cy // account for vertical flip used when drawing
-    // vertical line
-    ctx.beginPath(); ctx.moveTo(cx + 0.5, 0); ctx.lineTo(cx + 0.5, h); ctx.stroke()
-    // horizontal line
-    ctx.beginPath(); ctx.moveTo(0, screenY + 0.5); ctx.lineTo(w, screenY + 0.5); ctx.stroke()
+
+    const denomX = w > 1 ? (w - 1) : 1
+    const denomY = h > 1 ? (h - 1) : 1
+    const crossXDisplay = offsetX + (crossX / denomX) * drawW
+    const crossYDisplay = offsetY + ((h - 1 - crossY) / denomY) * drawH
+
+    ctx.beginPath()
+    ctx.moveTo(crossXDisplay + 0.5, offsetY)
+    ctx.lineTo(crossXDisplay + 0.5, offsetY + drawH)
+    ctx.stroke()
+    ctx.beginPath()
+    ctx.moveTo(offsetX, crossYDisplay + 0.5)
+    ctx.lineTo(offsetX + drawW, crossYDisplay + 0.5)
+    ctx.stroke()
     ctx.restore()
   }
 
@@ -370,6 +472,8 @@ const coord2idx = (c_mm, n, axis) => {
     if (axis==='z') setIz(coord2idx(parsed, nz, 'z'))
   }
 
+  const dimsKey = dims.join('x')
+
   // redraw on state changes
   useEffect(() => {
     const [nx, ny, nz] = dims
@@ -378,147 +482,249 @@ const coord2idx = (c_mm, n, axis) => {
     if (c0 && iz >=0 && iz < nz) drawSlice(c0, 'z', iz)
     if (c1 && iy >=0 && iy < ny) drawSlice(c1, 'y', iy)
     if (c2 && ix >=0 && ix < nx) drawSlice(c2, 'x', ix)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
-    dims, ix, iy, iz,
+    dimsKey, ix, iy, iz,
     overlayAlpha, posOnly, useAbs, thrMode, pctl, thrValue,
-    loadingBG, loadingMap, errBG, errMap, query
+    loadingBG, loadingMap, errBG, errMap, query,
+    canvasVersion
   ])
 
   const [nx, ny, nz] = dims
 
   // slice configs (labels only; numbers removed)
   const sliceConfigs = [
-    { key: 'y', name: 'Coronal',  axisLabel: 'Y', index: iy, setIndex: setIy, max: Math.max(0, ny-1), canvasRef: canvases[1] },
-    { key: 'x', name: 'Sagittal', axisLabel: 'X', index: ix, setIndex: setIx, max: Math.max(0, nx-1), canvasRef: canvases[2] },
-    { key: 'z', name: 'Axial',    axisLabel: 'Z', index: iz, setIndex: setIz, max: Math.max(0, nz-1), canvasRef: canvases[0] },
+    { key: 'y', name: 'Coronal Y', axisLabel: 'Y', canvasRef: canvases[1], width: nx, height: nz },
+    { key: 'x', name: 'Sagittal X', axisLabel: 'X', canvasRef: canvases[2], width: ny, height: nz },
+    { key: 'z', name: 'Axial Z', axisLabel: 'Z', canvasRef: canvases[0], width: nx, height: ny }
   ]
 
-  // shared small input styles to mimic Neurosynth (compact bordered boxes)
-  const nsInputCls = 'w-16 rounded border border-gray-400 px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-gray-400'
-  const nsLabelCls = 'mr-1 text-sm'
-
   return (
-    <div className='flex flex-col gap-3'>
-      <div className='flex items-center justify-between'>
+    <div className='viewer'>
+      <div className='viewer__header'>
         <div className='card__title'>NIfTI Viewer</div>
-        <div className='flex items-center gap-2 text-sm text-gray-500'>
-          {query && <a href={mapUrl} className='rounded-lg border px-2 py-1 text-xs hover:bg-gray-50'>Download map</a>}
-        </div>
+        {query && (
+          <a href={mapUrl} className='viewer__download'>
+            Download NIfTI
+          </a>
+        )}
       </div>
 
-      {/* --- Threshold mode & value --- */}
-      <div className='rounded-xl border p-3 text-sm'>
-        <label className='flex items-center gap-2'>
-          <span>Threshold mode</span>
-          <select value={thrMode} onChange={e=>setThrMode(e.target.value)} className='rounded-lg border px-2 py-1'>
+      <div className='viewer__section'>
+        <div className='viewer__field'>
+          <label htmlFor='viewer-threshold-mode'>Threshold mode</label>
+          <select
+            id='viewer-threshold-mode'
+            value={thrMode}
+            onChange={e => setThrMode(e.target.value)}
+            className='viewer__select'
+          >
             <option value='value'>Value</option>
             <option value='pctl'>Percentile</option>
           </select>
-        </label>
-        <br />
+        </div>
+
         {thrMode === 'value' ? (
-          <>
-            <label className='flex items-center gap-2'>
-              <span>Threshold</span>
-              <input type='number' step='0.01' value={thrValue} onChange={e=>setThrValue(Number(e.target.value))} className='w-28 rounded-lg border px-2 py-1' />
-            </label>
-            <br />
-          </>
+          <div className='viewer__field viewer__field--inline'>
+            <label htmlFor='viewer-threshold-value'>Threshold</label>
+            <input
+              id='viewer-threshold-value'
+              type='number'
+              step='0.01'
+              value={thrValue}
+              onChange={e => setThrValue(Number(e.target.value))}
+              className='viewer__input viewer__input--short'
+            />
+          </div>
         ) : (
-          <>
-            <label className='flex items-center gap-2'>
-              <span>Percentile</span>
-              <input type='number' min={50} max={99.9} step={0.5} value={pctl} onChange={e=>setPctl(Number(e.target.value)||95)} className='w-24 rounded-lg border px-2 py-1' />
-            </label>
-            <br />
-          </>
+          <div className='viewer__field viewer__field--inline'>
+            <label htmlFor='viewer-percentile'>Percentile</label>
+            <input
+              id='viewer-percentile'
+              type='number'
+              min={50}
+              max={99.9}
+              step={0.5}
+              value={pctl}
+              onChange={e => setPctl(Number(e.target.value) || 95)}
+              className='viewer__input viewer__input--short'
+            />
+          </div>
         )}
 
-        {/* Neurosynth-style coordinate inputs (signed, centered at 0) */}
-        <div className='mt-1 flex items-center gap-4'>
-          <label className='flex items-center'>
-            <span className={nsLabelCls}>X (mm):</span>
+        <div className='viewer__coords'>
+          <div className='viewer__coord'>
+            <label htmlFor='viewer-x'>X (mm)</label>
             <input
-              type='text' inputMode='decimal' pattern='-?[0-9]*([.][0-9]+)?'
-              className={nsInputCls}
+              id='viewer-x'
+              type='text'
+              inputMode='decimal'
+              pattern='-?[0-9]*([.][0-9]+)?'
+              className='viewer__coordInput'
               value={cx}
-              onChange={e=>setCx(e.target.value)}
-              onBlur={()=>commitCoord('x')}
-              onKeyDown={e=>{ if(e.key==='Enter'){ commitCoord('x') } }}
+              onChange={e => setCx(e.target.value)}
+              onBlur={() => commitCoord('x')}
+              onKeyDown={e => { if (e.key === 'Enter') commitCoord('x') }}
               aria-label='X coordinate (centered)'
             />
-          </label>
-          <label className='flex items-center'>
-            <span className={nsLabelCls}>Y (mm):</span>
+          </div>
+          <div className='viewer__coord'>
+            <label htmlFor='viewer-y'>Y (mm)</label>
             <input
-              type='text' inputMode='decimal' pattern='-?[0-9]*([.][0-9]+)?'
-              className={nsInputCls}
+              id='viewer-y'
+              type='text'
+              inputMode='decimal'
+              pattern='-?[0-9]*([.][0-9]+)?'
+              className='viewer__coordInput'
               value={cy}
-              onChange={e=>setCy(e.target.value)}
-              onBlur={()=>commitCoord('y')}
-              onKeyDown={e=>{ if(e.key==='Enter'){ commitCoord('y') } }}
+              onChange={e => setCy(e.target.value)}
+              onBlur={() => commitCoord('y')}
+              onKeyDown={e => { if (e.key === 'Enter') commitCoord('y') }}
               aria-label='Y coordinate (centered)'
             />
-          </label>
-          <label className='flex items-center'>
-            <span className={nsLabelCls}>Z (mm):</span>
+          </div>
+          <div className='viewer__coord'>
+            <label htmlFor='viewer-z'>Z (mm)</label>
             <input
-              type='text' inputMode='decimal' pattern='-?[0-9]*([.][0-9]+)?'
-              className={nsInputCls}
+              id='viewer-z'
+              type='text'
+              inputMode='decimal'
+              pattern='-?[0-9]*([.][0-9]+)?'
+              className='viewer__coordInput'
               value={cz}
-              onChange={e=>setCz(e.target.value)}
-              onBlur={()=>commitCoord('z')}
-              onKeyDown={e=>{ if(e.key==='Enter'){ commitCoord('z') } }}
+              onChange={e => setCz(e.target.value)}
+              onBlur={() => commitCoord('z')}
+              onKeyDown={e => { if (e.key === 'Enter') commitCoord('z') }}
               aria-label='Z coordinate (centered)'
             />
-          </label>
+          </div>
         </div>
+
       </div>
 
-      {/* --- Brain views --- */}
       {(loadingBG || loadingMap) && (
-        <div className='grid gap-3 lg:grid-cols-3'>
+        <div className='viewer__skeletonGrid'>
           {Array.from({ length: 3 }).map((_, i) => (
-            <div key={i} className='h-64 animate-pulse rounded-xl border bg-gray-100' />
+            <div key={i} className='viewer__skeletonTile' />
           ))}
         </div>
       )}
+
       {(errBG || errMap) && (
-        <div className='rounded-lg border border-yellow-200 bg-yellow-50 p-3 text-sm text-yellow-800'>
+        <div className='viewer__alert'>
           {errBG && <div>Background: {errBG}</div>}
           {errMap && <div>Map: {errMap}</div>}
         </div>
       )}
 
       {!!nx && (
-        <div className='grid grid-cols-3 gap-3' style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 12 }}>
-          {sliceConfigs.map(({ key, name, axisLabel, index, setIndex, max, canvasRef }) => (
-            <div key={key} className='flex flex-col gap-2'>
-              <div className='text-xs text-gray-600'>{name} ({axisLabel})</div>
-              <div className='flex items-center gap-2'>
-                <canvas ref={canvasRef} className='h-64 w-full rounded-xl border' onClick={(e)=>onCanvasClick(e, key)} style={{ cursor: 'crosshair' }} />
-              </div>
+        <div className='viewer__slices'>
+          {sliceConfigs.map(({ key, name, axisLabel, canvasRef, width, height }) => (
+            <div key={key} className='viewer__slice'>
+              <div className='viewer__sliceLabel' style={{whiteSpace:'nowrap'}}>{name} ({axisLabel})</div>
+              <canvas
+                ref={canvasRef}
+                className='viewer__canvas'
+                onClick={(e) => onCanvasClick(e, key)}
+                style={width && height ? { aspectRatio: `${width} / ${height}` } : undefined}
+              />
             </div>
           ))}
         </div>
       )}
 
-      {/* map generation params */}
-      <div className='rounded-xl border p-3 text-sm'>
-        <label className='flex flex-col'>Gaussian FWHM:
-          <input type='number' step='0.5' value={fwhm} onChange={e=>setFwhm(Number(e.target.value)||0)} className='w-28 rounded-lg border px-2 py-1'/>
-          <br />
-        </label>
+      <div className='viewer__section viewer__section--compact'>
+        <div className='viewer__field viewer__field--inline'>
+          <label htmlFor='viewer-fwhm'>Gaussian FWHM</label>
+          <input
+            id='viewer-fwhm'
+            type='number'
+            step='0.5'
+            value={fwhm}
+            onChange={e => setFwhm(Number(e.target.value) || 0)}
+            className='viewer__input viewer__input--short'
+          />
+        </div>
+
+        <div className='viewer__field viewer__field--inline'>
+          <label htmlFor='viewer-voxel'>Voxel (mm)</label>
+          <input
+            id='viewer-voxel'
+            type='number'
+            step='0.5'
+            min={1}
+            max={6}
+            value={voxel}
+            onChange={e => setVoxel(Number(e.target.value) || 1)}
+            className='viewer__input viewer__input--short'
+          />
+        </div>
+
+        <div className='viewer__field viewer__field--inline'>
+          <label htmlFor='viewer-kernel'>Kernel</label>
+          <select
+            id='viewer-kernel'
+            value={kernel}
+            onChange={e => setKernel(e.target.value)}
+            className='viewer__select viewer__select--short'
+          >
+            <option value='gauss'>Gaussian</option>
+            <option value='sinc'>Sinc</option>
+            <option value='uniform'>Uniform</option>
+          </select>
+        </div>
+
+        <div className='viewer__field viewer__field--inline'>
+          <label htmlFor='viewer-r'>r</label>
+          <input
+            id='viewer-r'
+            type='number'
+            step='0.5'
+            value={r}
+            onChange={e => setR(Number(e.target.value) || 0)}
+            className='viewer__input viewer__input--short'
+          />
+        </div>
       </div>
 
-      {/* overlay controls */}
-      <div className='rounded-xl border p-3 text-sm'>
-        <label className='flex items-center gap-2'>
-          <span>Overlay alpha</span>
-          <input type='range' min={0} max={1} step={0.05} value={overlayAlpha} onChange={e=>setOverlayAlpha(Number(e.target.value))} className='w-40' />
-        </label>
-        <br />
+      <div className='viewer__section viewer__section--compact'>
+        <div className='viewer__toggles'>
+          <label className='viewer__toggle'>
+            <input
+              type='checkbox'
+              checked={posOnly}
+              onChange={e => setPosOnly(e.target.checked)}
+            />
+            <span>Positive only</span>
+          </label>
+          <label className='viewer__toggle'>
+            <input
+              type='checkbox'
+              checked={useAbs}
+              onChange={e => setUseAbs(e.target.checked)}
+            />
+            <span>Abs values</span>
+          </label>
+        </div>
+
+        <div className='viewer__sliderRow'>
+          <label htmlFor='viewer-alpha'>Overlay alpha</label>
+          <input
+            id='viewer-alpha'
+            type='range'
+            min={0}
+            max={1}
+            step={0.05}
+            value={overlayAlpha}
+            onChange={e => setOverlayAlpha(Number(e.target.value))}
+            className='viewer__slider'
+          />
+          <span className='viewer__sliderValue'>{overlayAlpha.toFixed(2)}</span>
+        </div>
+      </div>
+
+      <div className='viewer__status'>
+        {loadingBG && <div>Loading background…</div>}
+        {loadingMap && <div>Loading map…</div>}
       </div>
     </div>
   )

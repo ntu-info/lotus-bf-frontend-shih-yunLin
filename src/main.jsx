@@ -4,7 +4,7 @@ import { createRoot } from 'react-dom/client'
 import App from './App.jsx'
 import './index.css' 
 
-function ErrorBoundary({ children }) {
+export function ErrorBoundary({ children }) {
   const [err, setErr] = React.useState(null)
   React.useEffect(() => {
     const handler = (e) => setErr(e?.error || e?.reason || e)
@@ -17,9 +17,9 @@ function ErrorBoundary({ children }) {
   }, [])
   if (err) {
     return (
-      <div style="padding:16px; font-family: ui-sans-serif">
+      <div style={{ padding: 16, fontFamily: 'ui-sans-serif' }}>
         <h2>Runtime error!</h2>
-        <pre style="white-space:pre-wrap; background:#f5f5f5; padding:12px; border-radius:8px;">
+        <pre style={{ whiteSpace: 'pre-wrap', background: '#f5f5f5', padding: 12, borderRadius: 8 }}>
 {String(err?.stack || err?.message || err)}
         </pre>
       </div>
@@ -28,7 +28,7 @@ function ErrorBoundary({ children }) {
   return children
 }
 
-console.log('[main] booting...') // smoke test：打開 DevTools 會看到
+console.log('[main] booting...') // smoke test: visible in DevTools
 
 createRoot(document.getElementById('root')).render(
   <React.StrictMode>

@@ -1,22 +1,149 @@
-
 import { useCallback, useRef, useState } from 'react'
-import { Terms } from './components/Terms'
+import Header from './components/Header'
+import { API_BASE } from './api'
+import { useEffect } from 'react'
 import { QueryBuilder } from './components/QueryBuilder'
 import { Studies } from './components/Studies'
 import { NiiViewer } from './components/NiiViewer'
+import { Filters } from './components/Filters'
+import { FILTER_DEFAULTS } from './components/filterConstants'
 import { useUrlQueryState } from './hooks/useUrlQueryState'
+import BookmarksPage from './components/BookmarksPage'
 import './App.css'
 
-export default function App () {
-  const [query, setQuery] = useUrlQueryState('q')
+const AUTHOR_PROFILES = [
+  {
+    name: 'Dr. Anonymous One',
+    role: 'Lead Neuroscientist',
+    affiliation: 'Neuro Search Collective',
+    bio: 'Guides the NOUS programme with reproducible pipelines that convert population evidence into clear clinical guidance.',
+    publications: 34,
+    focus: 'Functional MRI'
+  },
+  {
+    name: 'Dr. Anonymous Two',
+    role: 'Data Science Director',
+    affiliation: 'Evidence-to-Inference Lab',
+    bio: 'Designs the evidence-to-inference (E2I) models that power provenance-first search while balancing statistical rigour and usability.',
+    publications: 27,
+    focus: 'Bayesian Inference'
+  },
+  {
+    name: 'Dr. Anonymous Three',
+    role: 'Clinical Collaborator',
+    affiliation: 'Provenance Medicine Network',
+    bio: 'Connects NOUS E2I with clinicians by validating model assumptions, curating case studies, and quality checking citation-ready outputs.',
+    publications: 18,
+    focus: 'Translational Neuroscience'
+  }
+]
 
-  const handlePickTerm = useCallback((t) => {
-    setQuery((q) => (q ? `${q} ${t}` : t))
+const AuthorSpotlight = () => (
+  <section className="author-spotlight">
+    <div className="author-spotlight__header">
+      <h2>Author Spotlight</h2>
+      <p>Meet the scientists guiding NOUS from evidence gathering to inference-ready insight.</p>
+    </div>
+    <div className="author-spotlight__grid">
+      {AUTHOR_PROFILES.map((profile) => {
+        const initials = profile.name
+          .split(' ')
+          .map((part) => part[0])
+          .join('')
+          .slice(0, 2)
+          .toUpperCase()
+        return (
+          <article key={profile.name} className="author-card">
+            <div className="author-card__avatar">
+              <span>{initials}</span>
+            </div>
+            <div className="author-card__body">
+              <h3>{profile.name}</h3>
+              <p className="author-card__role">
+                {profile.role} · {profile.affiliation}
+              </p>
+              <p className="author-card__bio">{profile.bio}</p>
+            </div>
+            <div className="author-card__footer">
+              <div>
+                <strong>{profile.publications}</strong>
+                <span>publications</span>
+              </div>
+              <div>
+                <strong>{profile.focus}</strong>
+                <span>primary focus</span>
+              </div>
+            </div>
+          </article>
+        )
+      })}
+    </div>
+  </section>
+)
+export default function App() {
+  const [activeView, setActiveView] = useState('home')
+  const [query, setQuery] = useUrlQueryState('q', '')
+  // Track if user manually picked a term
+  const [pickedTerm, setPickedTerm] = useState('')
+  const [searchTerm, setSearchTerm] = useState('')
+  const [terms, setTerms] = useState([])
+  const [loading, setLoading] = useState(false)
+  const [err, setErr] = useState('')
+
+  // Clear hero search inputs on first mount
+  useEffect(() => {
+    setSearchTerm('')
+    setPickedTerm('')
+  }, [])
+
+  useEffect(() => {
+    let alive = true
+    const ac = new AbortController()
+    const load = async () => {
+      setLoading(true)
+      setErr('')
+      try {
+        const res = await fetch(`${API_BASE}/terms`, { signal: ac.signal })
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        const data = await res.json()
+        if (!alive) return
+        setTerms(Array.isArray(data?.terms) ? data.terms : [])
+      } catch (e) {
+        if (!alive) return
+        setErr(`Failed to fetch terms: ${e?.message || e}`)
+      } finally {
+        if (alive) setLoading(false)
+      }
+    }
+    load()
+    return () => { alive = false; ac.abort() }
+  }, [])
+  const [filters, setFilters] = useState(() => ({ ...FILTER_DEFAULTS }))
+  const [studiesData, setStudiesData] = useState([])
+
+  // appendTerm removed (unused) to satisfy lint rules
+
+  const handleFilterChange = useCallback((next) => {
+    setFilters(next)
+  }, [])
+
+  const handleFilterReset = useCallback(() => {
+    setFilters({ ...FILTER_DEFAULTS })
+  }, [])
+
+  const submitSearch = useCallback((term) => {
+    const sanitized = (term || '').trim()
+    if (!sanitized) return
+    setPickedTerm(sanitized)
+    setQuery(sanitized)
+    setSearchTerm('')
+    setActiveView('home')
   }, [setQuery])
 
   // --- resizable panes state ---
   const gridRef = useRef(null)
-  const [sizes, setSizes] = useState([28, 44, 28]) // [left, middle, right]
+  // Initial column ratio: left, middle, right
+  const [sizes, setSizes] = useState([24, 52, 24]) // [left, middle, right]
   const MIN_PX = 240
 
   const startDrag = (which, e) => {
@@ -56,122 +183,188 @@ export default function App () {
     window.addEventListener('mouseup', onMouseUp)
   }
 
+  // Listen for table updates so bookmarks view sees the latest rows
+  // Assumes the Studies component exposes an onRowsChange callback
+  const handleStudiesRowsChange = (rows) => {
+    setStudiesData(rows)
+  }
+
+  const showHome = useCallback(() => setActiveView('home'), [])
+  const showBookmarks = useCallback(() => setActiveView('bookmarks'), [])
+  const showAuthors = useCallback(() => setActiveView('authors'), [])
+
   return (
     <div className="app">
-      {/* Inline style injection to enforce no-hover look */}
-      <style>{`
-        :root {
-          --primary-600: #2563eb;
-          --primary-700: #1d4ed8;
-          --primary-800: #1e40af;
-          --border: #e5e7eb;
-        }
-        .app { padding-right: 0 !important; }
-        .app__grid { width: 100vw; max-width: 100vw; }
-        .card input[type="text"],
-        .card input[type="search"],
-        .card input[type="number"],
-        .card select,
-        .card textarea {
-          width: 100% !important;
-          max-width: 100% !important;
-          display: block;
-        }
-        /* Downsized buttons */
-        .card button,
-        .card [role="button"],
-        .card .btn,
-        .card .button {
-          font-size: 12px !important;
-          padding: 4px 8px !important;
-          border-radius: 8px !important;
-          line-height: 1.2 !important;
-          background: var(--primary-600) !important;
-          color: #fff !important;
-          border: none !important;
-        }
-        /* No visual change on hover/active */
-        .card button:hover,
-        .card button:active,
-        .card [role="button"]:hover,
-        .card [role="button"]:active,
-        .card .btn:hover,
-        .card .btn:active,
-        .card .button:hover,
-        .card .button:active {
-          background: var(--primary-600) !important;
-          color: #fff !important;
-        }
-        /* Toolbars / chips also no-hover */
-        .card .toolbar button,
-        .card .toolbar [role="button"],
-        .card .toolbar .btn,
-        .card .toolbar .button,
-        .card .qb-toolbar button,
-        .card .qb-toolbar [role="button"],
-        .card .qb-toolbar .btn,
-        .card .qb-toolbar .button,
-        .card .query-builder button,
-        .card .query-builder [role="button"],
-        .card .query-builder .btn,
-        .card .query-builder .button,
-        .card .chip,
-        .card .pill,
-        .card .tag {
-          background: var(--primary-600) !important;
-          color: #fff !important;
-          border: none !important;
-        }
-        .card .toolbar button:hover,
-        .card .qb-toolbar button:hover,
-        .card .query-builder button:hover,
-        .card .chip:hover,
-        .card .pill:hover,
-        .card .tag:hover,
-        .card .toolbar button:active,
-        .card .qb-toolbar button:active,
-        .card .query-builder button:active {
-          background: var(--primary-600) !important;
-          color: #fff !important;
-        }
-        /* Disabled stays same color but dimmer for affordance */
-        .card .toolbar button:disabled,
-        .card .qb-toolbar button:disabled,
-        .card .query-builder button:disabled,
-        .card button[disabled],
-        .card [aria-disabled="true"] {
-          background: var(--primary-600) !important;
-          color: #fff !important;
-          opacity: .55 !important;
-        }
-      `}</style>
+      <Header
+        activeView={activeView}
+        onSelectHome={showHome}
+        onSelectBookmarks={showBookmarks}
+        onSelectAuthors={showAuthors}
+      />
+      {activeView === 'home' && (
+        <>
+          <div style={{width:'100%',background:'#f5f5f5',padding:'48px 0 0 0',display:'flex',flexDirection:'column',alignItems:'center'}}>
+            <h1 style={{
+              fontFamily: 'Playfair Display, serif',
+              fontWeight: 700,
+              fontSize: '3em',
+              textAlign: 'center',
+              maxWidth: '900px',
+              lineHeight: '1.1',
+              marginBottom: '18px',
+              letterSpacing: '-0.02em',
+            }}>Evidence. Search. Inference.</h1>
+            <div style={{
+              fontFamily: 'Sora, sans-serif',
+              fontSize: '1.25em',
+              color: '#444',
+              textAlign: 'center',
+              maxWidth: '700px',
+              marginBottom: '32px',
+              letterSpacing: '-0.01em',
+            }}>
+              NOUS E2I converts evidence into inference and offers provenance-first, citation-ready neuro search.
+            </div>
+            <div style={{position:'relative',width:'100%',maxWidth:'420px',margin:'0 auto 32px auto'}}>
+              <input
+                type="text"
+                placeholder="Search terms..."
+                style={{
+                  width:'100%',
+                  height:'54px',
+                  fontSize:'1.15em',
+                  borderRadius:'32px',
+                  border:'2px solid #e0e0e0',
+                  background:'#fff',
+                  boxShadow:'0 2px 16px #0001',
+                  padding:'0 56px 0 24px',
+                  outline:'none',
+                  transition:'border-color 0.2s',
+                }}
+                value={searchTerm}
+                onChange={e => {
+                  setSearchTerm(e.target.value)
+                  setPickedTerm('') // reset pickedTerm when typing
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault()
+                    submitSearch(searchTerm)
+                  }
+                }}
+                autoComplete="off"
+              />
+              {(searchTerm.length > 0 && !loading && !err) && (
+                <div
+                  style={{
+                    position: 'absolute',
+                    top: '60px',
+                    left: 0,
+                    right: 0,
+                    background: '#fff',
+                    borderRadius: '16px',
+                    boxShadow: '0 4px 24px #0002',
+                    zIndex: 10,
+                    maxHeight: '320px',
+                    overflowY: 'auto',
+                    border: '1px solid #e0e0e0',
+                  }}
+                >
+                  {terms.filter(t => t.toLowerCase().includes(searchTerm.trim().toLowerCase())).length === 0 ? (
+                    <div style={{ padding: '18px', color: '#888', textAlign: 'center' }}>No matching terms found</div>
+                  ) : (
+                    terms.filter(t => t.toLowerCase().includes(searchTerm.trim().toLowerCase())).map((t, idx) => (
+                      <div
+                        key={t + idx}
+                        style={{
+                          padding: '16px 24px',
+                          cursor: 'pointer',
+                          fontSize: '1.15em',
+                          borderBottom: idx !== terms.length - 1 ? '1px solid #f0f0f0' : 'none',
+                          color: '#222',
+                          background: '#fff',
+                        }}
+                        onMouseDown={() => {
+                          submitSearch(t)
+                          setSearchTerm('') // hide dropdown after pick
+                        }}
+                        onMouseOver={e => (e.currentTarget.style.background = '#f5f5f5')}
+                        onMouseOut={e => (e.currentTarget.style.background = '#fff')}
+                      >
+                        {t}
+                      </div>
+                    ))
+                  )}
+                </div>
+              )}
+              {loading && (
+                <div style={{ position: 'absolute', top: '60px', left: 0, right: 0, background: '#fff', borderRadius: '16px', boxShadow: '0 4px 24px #0002', zIndex: 10, padding: '18px', textAlign: 'center', color: '#888' }}>
+                  Loading...
+                </div>
+              )}
+              {err && (
+                <div style={{ position: 'absolute', top: '60px', left: 0, right: 0, background: '#fff', borderRadius: '16px', boxShadow: '0 4px 24px #0002', zIndex: 10, padding: '18px', textAlign: 'center', color: '#d00' }}>
+                  {err}
+                </div>
+              )}
+            </div>
+          </div>
+          <main className="app__grid" ref={gridRef}>
+            <section className="card card--stack" style={{ flexBasis: `${Math.max(sizes[0], 16)}%`, minWidth: 220 }}>
+              <Filters
+                filters={filters}
+                onChange={handleFilterChange}
+                onReset={handleFilterReset}
+              />
+            </section>
 
-      <header className="app__header">
-        <h1 className="app__title">LoTUS-BF</h1>
-        <div className="app__subtitle">Location-or-Term Unified Search for Brain Functions</div>
-      </header>
+            <div className="resizer" aria-label="Resize left/middle" onMouseDown={(e) => startDrag(0, e)} />
 
-      <main className="app__grid" ref={gridRef}>
-        <section className="card" style={{ flexBasis: `${sizes[0]}%` }}>
-          <div className="card__title">Terms</div>
-          <Terms onPickTerm={handlePickTerm} />
-        </section>
+            <section className="card card--stack" style={{ flexBasis: `${Math.max(sizes[1], 16)}%` }}>
+              <QueryBuilder query={query} setQuery={setQuery} />
+              <div className="divider" />
+              <Studies
+                query={pickedTerm
+                  ? pickedTerm
+                  : (searchTerm && terms.filter(t => t.toLowerCase().includes(searchTerm.trim().toLowerCase()))[0])
+                    ? terms.filter(t => t.toLowerCase().includes(searchTerm.trim().toLowerCase()))[0]
+                    : query}
+                filters={filters}
+                onRowsChange={handleStudiesRowsChange}
+              />
+            </section>
 
-        <div className="resizer" aria-label="Resize left/middle" onMouseDown={(e) => startDrag(0, e)} />
+            <div className="resizer" aria-label="Resize middle/right" onMouseDown={(e) => startDrag(1, e)} />
 
-        <section className="card card--stack" style={{ flexBasis: `${sizes[1]}%` }}>
-          <QueryBuilder query={query} setQuery={setQuery} />
-          {/* <div className="hint">Current Query：<code className="hint__code">{query || '(empty)'}</code></div> */}
-          <div className="divider" />
-          <Studies query={query} />
-        </section>
-
-        <div className="resizer" aria-label="Resize middle/right" onMouseDown={(e) => startDrag(1, e)} />
-
-        <section className="card" style={{ flexBasis: `${sizes[2]}%` }}>
-          <NiiViewer query={query} />
-        </section>
-      </main>
-    </div>
+            <section className="card" style={{ flexBasis: `${Math.max(sizes[2], 16)}%` }}>
+              <NiiViewer query={query} />
+            </section>
+          </main>
+        </>
+      )}
+      {activeView === 'bookmarks' && (
+        <div style={{padding:'32px'}}>
+          <BookmarksPage
+            studies={studiesData}
+            activeQuery={query}
+            onClose={showHome}
+          />
+        </div>
+      )}
+      {activeView === 'authors' && (
+        <AuthorSpotlight />
+      )}
+    <footer className="app-footer">
+      <div className="footer-content">
+        <span className="footer-title">NOUS</span>
+        <span className="footer-desc">NOUS E2I converts evidence into inference and offers provenance-first, citation-ready neuro search.</span>
+        <span className="footer-links">
+          <button type="button" onClick={showHome}>Home</button> ·{' '}
+          <button type="button" onClick={showBookmarks}>Bookmarks</button> ·{' '}
+          <button type="button" onClick={showAuthors}>Authors</button>
+        </span>
+      </div>
+    </footer>
+  </div>
   )
 }

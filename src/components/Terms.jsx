@@ -1,11 +1,12 @@
 import { API_BASE } from '../api'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
-export function Terms ({ onPickTerm }) {
+export function Terms({ onPickTerm }) {
   const [terms, setTerms] = useState([])
   const [search, setSearch] = useState('')
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState('')
+  const inputRef = useRef(null)
 
   useEffect(() => {
     let alive = true
@@ -31,68 +32,92 @@ export function Terms ({ onPickTerm }) {
   }, [])
 
   const filtered = useMemo(() => {
-    const s = search.trim().toLowerCase()
-    if (!s) return terms
-    return terms.filter(t => t.toLowerCase().includes(s))
+    const s = (search ?? '').trim().toLowerCase()
+    if (!s) return []
+  // Prioritize exact matches first
+  const exact = terms.filter(t => t.toLowerCase() === s)
+  // Then include prefix matches while preserving original order
+  const rest = terms.filter(t => t.toLowerCase() !== s && t.toLowerCase().startsWith(s))
+  return [...exact, ...rest]
   }, [terms, search])
 
+  // Dropdown should show only when search is not empty
+  const showDropdown = search.length > 0 && !loading && !err
+
   return (
-    <div className='terms'>
-      {/* Removed internal <h2> to avoid double "Terms" header. The bold title now comes from App.jsx card__title. */}
-
-      <div className='terms__controls'>
-        <input
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder='Search terms…'
-          className='input'
-        />
-        <button
-          onClick={() => setSearch('')}
-          className='btn btn--primary'
+    <div className="terms-autocomplete" style={{ position: 'relative', maxWidth: 420, margin: '0 auto' }}>
+      <input
+        ref={inputRef}
+        type="text"
+  placeholder="Search terms..."
+        value={search}
+        onChange={e => setSearch(e.target.value)}
+        style={{
+          width: '100%',
+          height: '54px',
+          fontSize: '1.15em',
+          borderRadius: '32px',
+          border: '2px solid #e0e0e0',
+          background: '#fff',
+          boxShadow: '0 2px 16px #0001',
+          padding: '0 56px 0 24px',
+          outline: 'none',
+          transition: 'border-color 0.2s',
+        }}
+        autoComplete="off"
+      />
+      {showDropdown && (
+        <div
+          className="terms-dropdown"
+          style={{
+            position: 'absolute',
+            top: '60px',
+            left: 0,
+            right: 0,
+            background: '#fff',
+            borderRadius: '16px',
+            boxShadow: '0 4px 24px #0002',
+            zIndex: 10,
+            maxHeight: '320px',
+            overflowY: 'auto',
+            border: '1px solid #e0e0e0',
+          }}
         >
-          Clear
-        </button>
-      </div>
-
-      {loading && (
-        <div className='terms__skeleton'>
-          {Array.from({ length: 6 }).map((_, i) => (
-            <div key={i} className='terms__skeleton-row' />
-          ))}
-        </div>
-      )}
-
-      {err && (
-        <div className='alert alert--error'>
-          {err}
-        </div>
-      )}
-
-      {!loading && !err && (
-        <div className='terms__list'>
           {filtered.length === 0 ? (
-            <div className='terms__empty'>No terms found</div>
+            <div style={{ padding: '18px', color: '#888', textAlign: 'center' }}>No matching terms found</div>
           ) : (
-            <ul className='terms__ul'>
-              {filtered.slice(0, 500).map((t, idx) => (
-                <li key={`${t}-${idx}`} className='terms__li'>
-                  <a
-  href="#"
-  className='terms__name'
-  title={t}
-  aria-label={`Add term ${t}`}
-  onClick={(e) => { e.preventDefault(); onPickTerm?.(t); }}
->
-  {t}
-</a>
-                </li>
-              ))}
-            </ul>
+            filtered.map((t, idx) => (
+              <div
+                key={t + idx}
+                className="terms-dropdown-item"
+                style={{
+                  padding: '16px 24px',
+                  cursor: 'pointer',
+                  fontSize: '1.15em',
+                  borderBottom: idx !== filtered.length - 1 ? '1px solid #f0f0f0' : 'none',
+                  color: '#222',
+                  background: '#fff',
+                }}
+                onMouseDown={() => onPickTerm?.(t)}
+                onMouseOver={e => (e.currentTarget.style.background = '#f5f5f5')}
+                onMouseOut={e => (e.currentTarget.style.background = '#fff')}
+              >
+                {t}
+              </div>
+            ))
           )}
+        </div>
+      )}
+      {loading && (
+        <div style={{ position: 'absolute', top: '60px', left: 0, right: 0, background: '#fff', borderRadius: '16px', boxShadow: '0 4px 24px #0002', zIndex: 10, padding: '18px', textAlign: 'center', color: '#888' }}>
+          Loading...
+        </div>
+      )}
+      {err && (
+        <div style={{ position: 'absolute', top: '60px', left: 0, right: 0, background: '#fff', borderRadius: '16px', boxShadow: '0 4px 24px #0002', zIndex: 10, padding: '18px', textAlign: 'center', color: '#d00' }}>
+          {err}
         </div>
       )}
     </div>
   )
 }
-
